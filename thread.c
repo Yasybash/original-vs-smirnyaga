@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <random.h>
 #include <stdio.h>
+#include <list.h>
 #include <string.h>
 #include "threads/flags.h"
 #include "threads/interrupt.h"
@@ -70,6 +71,7 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+static bool compare(struct list_elem* f, struct list_elem* t, void* aux);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -98,6 +100,7 @@ thread_init (void)
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
+  initial_thread->wait = NULL;
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -209,8 +212,11 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  thread_yield();
+
   return tid;
 }
+
 
 /* Puts the current thread to sleep.  It will not be scheduled
    again until awoken by thread_unblock().
@@ -316,7 +322,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  list_push_back (&ready_list, &cur->elem);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -343,7 +349,27 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  bool pass = false;
+  if (thread_current()->priority == thread_current()->original_priority)
+	  pass = true;
+
+  (thread_current()->priority) = (thread_current()->original_priority) = new_priority;
+  if (pass) thread_yield();
+ 
+  enum intr_level old_level = intr_disable();
+  struct thread* buf = thread_current();
+
+  if (!list_empty(&buf->queue))
+  {
+	int higher_priority = list_entry(list_front(&buf->queue), struct thread, queue_elem)->priority;
+	if(higher_priority > new_priority)
+	{
+		buf->priority = higher_priority;
+		thread_yield();
+	}
+
+  }
+  intr_set_level(old_level);
 }
 
 /* Returns the current thread's priority. */
@@ -467,9 +493,11 @@ init_thread (struct thread *t, const char *name, int priority)
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
-  t->priority = priority;
+  t->priority = t->original_priority = priority;
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
+  list_init(&t->queue);
+  t->wait = NULL;
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -555,6 +583,7 @@ thread_schedule_tail (struct thread *prev)
 static void
 schedule (void) 
 {
+  list_sort(&ready_list, &compare, NULL);
   struct thread *cur = running_thread ();
   struct thread *next = next_thread_to_run ();
   struct thread *prev = NULL;
@@ -585,3 +614,9 @@ allocate_tid (void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+///////////////////////////////////////////////////////////////////////////////////////////
+bool compare(struct list_elem* f, struct list_elem* t, void* aux)
+{
+	return (list_entry(f, struct thread, elem)->priority) > (list_entry(t, struct thread, elem)->priority);
+}
+
